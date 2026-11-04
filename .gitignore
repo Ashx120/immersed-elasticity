@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+# Local experiments. Keep the reference benchmark files in results/.
+/results/playground/
+/results/walkthrough/
+# The source manuscript is referenced, not redistributed.
+2604.15921v2.pdf
