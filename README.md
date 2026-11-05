@@ -218,3 +218,9 @@ industrial analysis package.
 
 The next focused extension is non-negative moment fitting, evaluated against
 this verified baseline. See [the V2 roadmap](docs/V2_ROADMAP.md).
+
+## License
+
+This project's code and accompanying documentation are licensed under the
+[MIT License](LICENSE). Third-party dependencies and the referenced paper
+retain their respective licenses.
