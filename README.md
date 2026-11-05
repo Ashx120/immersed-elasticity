@@ -9,6 +9,10 @@ mesh refinement, using an exact analytical stress reference. The verification
 suite covers affine displacement reproduction, uniaxial tension, reaction balance,
 cut-domain area integration, and convergence of the immersed solution.
 
+**V2 adds non-negative moment fitting.** On the 16 x 16 plate, it reduces
+integration points from 2,384 to 1,027 while preserving the Q4 solution to
+floating-point precision. Cached-rule integration timings are reported below.
+
 ![Computed displacement, stress, and error](results/fields.png)
 
 ## Motivation and relationship to the paper
@@ -21,13 +25,13 @@ This repository is an independent educational implementation of a **simplified
 immersed linear-elastic baseline**. It is not a full replication, and its results
 are not reproductions of the paper's figures or plasticity benchmarks.
 
-| Feature | V1 | Planned V2 or later |
-|---|---|---|
-| Approximation | Bilinear Q4, plane stress | High-order basis |
-| Geometry integration | Adaptive quadtree + Gauss quadrature | Non-negative moment fitting |
-| Mesh refinement | Uniform background-grid refinement | Hierarchical overlay refinement |
-| Material | Isotropic linear elasticity | Thermoelasticity and inelastic models |
-| Reference | Exact Kirsch stress under exact outer tractions | Additional engineering benchmarks |
+| Feature | V1 | V2 | Later extensions |
+|---|---|---|---|
+| Approximation | Bilinear Q4, plane stress | Bilinear Q4, plane stress | High-order basis |
+| Geometry integration | Adaptive quadtree + Gauss quadrature | Selectable quadtree or non-negative moment fitting | Further integration strategies |
+| Mesh refinement | Uniform background-grid refinement | Uniform background-grid refinement | Hierarchical overlay refinement |
+| Material | Isotropic linear elasticity | Isotropic linear elasticity | Isothermal viscoplasticity, then thermal coupling |
+| Reference | Exact Kirsch stress | Same exact Kirsch stress | Additional engineering benchmarks |
 
 ## Run locally
 
@@ -82,6 +86,31 @@ according to `REFINEMENT_MULTIPLIERS`. It shows how that quantity changes with
 refinement for your chosen loads and geometry. The benchmark convergence
 plot instead measures stress error against the exact Kirsch solution.
 
+### V2 quadrature experiments
+
+On the v2 branch, select `method="moment-fitting"` in the playground's
+`QUADRATURE` settings, or use `--method moment-fitting` for the benchmark:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_benchmark.py --method moment-fitting --mesh 8 16 32 --output results/walkthrough/v2-fitted
+.\.venv\Scripts\python.exe scripts/run_benchmark.py --method quadtree --mesh 8 16 32 --output results/walkthrough/v2-quadtree
+```
+
+Both runs create fields, mesh, and convergence plots plus CSV and JSON metrics.
+The metrics identify the selected method and integration-point count. Stress
+error evaluation uses the same independent quadtree rule for both methods.
+Assembly timings include rule generation and fitting. A failed moment fit uses
+the quadtree rule for that cell and emits a warning.
+
+For the one-cell explanation, run `scripts/fit_one_cell.py --degree 2`.
+For a direct same-mesh comparison, run `scripts/compare_quadrature.py`.
+For setup and repeated-integration timings, run `scripts/time_quadrature.py`.
+These commands all use the configured Python environment. Moment fitting here
+compresses the quadtree's alpha-weighted rule, using its positive-weight points
+as candidates and preserving polynomial moments through degree two per coordinate.
+It inherits the reference rule's geometry approximation. The full-plate comparison
+and fallback behavior are covered by tests.
+
 ## Engineering model
 
 The physical quarter-domain is `[0,4] x [0,4] mm` outside a hole of radius `1 mm`
@@ -125,8 +154,10 @@ sample values; these plotting samples are not the assembly quadrature points.
 
 ## Verification and results
 
-Run `python -m pytest -q` in the configured environment. Eight tests currently pass,
-including three parameterized checks rejecting invalid material properties.
+Run `python -m pytest -q` in the configured environment. Thirteen tests currently
+pass, including moment preservation, compressed Q4 stiffness, same-mesh solution
+agreement, and the fallback from a failed fit. Three parameterized checks reject
+invalid material properties.
 
 | Check | Acceptance criterion |
 |---|---|
@@ -193,16 +224,79 @@ the numerical peak would require sampling along the hole boundary.
 For this mesh and geometry, mesh resolution dominates those parameter changes.
 This is not a general conditioning guarantee for arbitrarily small cut fractions.
 
+### V2 accuracy and integration-point comparison
+
+Both methods use identical meshes, boundary conditions, reference quadrature
+depth 4, and fictitious stiffness factor `1e-6`.
+
+| Mesh | Quadtree points | Fitted points | Point reduction | Stress L2 error, both methods |
+|---|---:|---:|---:|---:|
+| 8 x 8 | 924 | 267 | 71.1% | 7.877% |
+| 16 x 16 | 2,384 | 1,027 | 56.9% | 4.362% |
+| 32 x 32 | 6,764 | 4,007 | 40.8% | 2.291% |
+
+Only cut cells are compressed. Solid cells retain standard Gauss quadrature.
+The fraction of work in solid cells increases with refinement in this example.
+On the 16 x 16 mesh, relative differences between methods were `2.917e-17` for
+global stiffness, `9.551e-16` for displacement, and `1.488e-15` for constrained-DOF
+reactions. Reproduce this comparison with `scripts/compare_quadrature.py`.
+
+### V2 setup and cached-rule timing experiment
+
+The following Windows measurements were recorded during the walkthrough using
+`scripts/time_quadrature.py`, with five trials and twenty integration passes per
+trial. Each reported time is a median. Repeated passes recompute the Q4 kinematics
+and element stiffness using stored points and weights.
+
+| Method | Rule setup | One integration pass across the mesh |
+|---|---:|---:|
+| Quadtree | 0.029940 s | 0.018614 s |
+| Moment fitting | 0.032281 s | 0.012897 s |
+
+In this run, fitting added 0.002341 s of setup and saved 0.005717 s per pass.
+Estimated setup plus twenty passes was 0.402220 s for quadtree and 0.290221 s
+for moment fitting, approximately 28% less time for this measured workload.
+The estimated first cheaper pass count was one. Timings and break-even estimates
+vary with machine and run conditions.
+
+This experiment excludes sparse global assembly, the linear solve, and material
+history updates. A separate single-run full assembly measurement was slightly
+slower with fitting (0.0652 s versus 0.0623 s). The measurements cover different
+workloads and timing conditions. A linear-elastic application would normally
+reuse its assembled stiffness matrix. The cached-rule experiment isolates a
+cost relevant to future nonlinear analyses that repeatedly update stiffness.
+
+### Scope of the paper reproduction
+
+V2 compresses the reference quadtree rule using its existing positive-weight
+points as candidates. This guarantees a feasible candidate rule before fitting,
+subject to numerical solution tolerances. The paper also investigates candidate
+point enrichment. This implementation uses fixed candidates and a quadtree
+fallback on a failed fit. The fit tolerance is a relative moment residual of
+`1e-10`. Geometry accuracy is controlled by the prescribed quadtree depth rather
+than an automatically enforced integration-error tolerance.
+
+Degree two in each coordinate covers the stiffness integrand for our rectangular
+Q4 elements with constant elastic properties. That exact polynomial argument
+needs reassessment for variable properties, nonlinear constitutive models, or
+other element mappings. Fictitious-region weights are included in full-solver
+fits. The physical-area demonstration instead uses `alpha=0`.
+
 ## Repository map
 
 ```text
 src/immersed_elasticity/
     solver.py           Q4 kinematics, sparse assembly, loads, constraints
     quadrature.py       Geometric classification and quadtree integration
+    moment_fitting.py   Non-negative polynomial moment fitting
     reference.py        Analytical Kirsch stresses and boundary tractions
     benchmark.py        Experiments, metrics, and figures
 tests/                  Physical and numerical verification
 scripts/run_benchmark.py
+scripts/fit_one_cell.py
+scripts/compare_quadrature.py
+scripts/time_quadrature.py
+playground.py           User-editable model settings and plots
 results/                Reproducible example output
 docs/V2_ROADMAP.md       Deferred paper features
 ```
@@ -212,12 +306,13 @@ docs/V2_ROADMAP.md       Deferred paper features
 V1 supports axis-aligned rectangular Q4 cells, one centered circular hole,
 plane stress, and linear elasticity. It has no cut-cell preconditioner, automated
 small-cut stabilization, high-order basis, local overlay refinement, thermal
-solver, plasticity, or moment fitting. Boundary load quadrature is intended for
+solver, or plasticity. Boundary load quadrature is intended for
 uncut straight outer edges. It is a research portfolio solver rather than an
 industrial analysis package.
 
-The next focused extension is non-negative moment fitting, evaluated against
-this verified baseline. See [the V2 roadmap](docs/V2_ROADMAP.md).
+V2 provides moment fitting on the verified linear-elastic baseline. The next
+planned stage is material-point verification and isothermal viscoplasticity.
+See [the development roadmap](docs/V2_ROADMAP.md).
 
 ## License
 

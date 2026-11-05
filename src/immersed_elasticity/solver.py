@@ -12,6 +12,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import MatrixRankWarning, spsolve
 
 from .quadrature import classify, cut_rule, gauss
+from .moment_fitting import compress_rule
 
 
 @dataclass(frozen=True)
@@ -80,15 +81,30 @@ def dofs(cell):
     return (2*np.asarray(cell)[:,None]+np.array([0,1])).ravel()
 
 
-def assemble(mesh, material, depth=3, alpha=1e-6):
+def assemble(mesh, material, depth=3, alpha=1e-6, *, method="quadtree"):
+    """Assemble stiffness using quadtree or moment-fitted cut-cell quadrature.
+
+    Returns the stiffness matrix and the number of points used in integration.
+    Moment fitting compresses the complete alpha-weighted rule with degree two
+    in each coordinate. Failed fits fall back to the reference rule with a warning.
+    """
     if not (0 < alpha <= 1) or depth < 0 or int(depth) != depth:
         raise ValueError("Require 0 < alpha <= 1 and integer depth >= 0.")
+    if method not in ("quadtree", "moment-fitting"):
+        raise ValueError("method must be 'quadtree' or 'moment-fitting'.")
     rows, cols, values = [], [], []
     point_count = 0
+    fallbacks = 0
     for cell in mesh.cells:
         xy = mesh.nodes[cell]
         bounds = (xy[0,0],xy[1,0],xy[0,1],xy[3,1])
         points, weights = cut_rule(bounds, mesh.radius, depth, alpha)
+        if method == "moment-fitting" and classify(bounds, mesh.radius) == 0:
+            try:
+                points, weights = compress_rule(points, weights, bounds, degree=2)
+            except RuntimeError:
+                # Assignment above only takes effect when fitting succeeds.
+                fallbacks += 1
         _, B = element_kinematics(xy, points)
         ke = np.einsum("qia,ij,qjb,q->ab", B, material.D, B, weights)*material.thickness
         ids = dofs(cell)
@@ -96,6 +112,9 @@ def assemble(mesh, material, depth=3, alpha=1e-6):
         point_count += len(points)
     n = 2*len(mesh.nodes)
     K = coo_matrix((values,(rows,cols)),shape=(n,n)).tocsr()
+    if fallbacks:
+        warnings.warn(f"Moment fitting failed in {fallbacks} cells; used quadtree rules there.",
+                      RuntimeWarning, stacklevel=2)
     return K, point_count
 
 

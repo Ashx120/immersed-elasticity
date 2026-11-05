@@ -29,7 +29,8 @@ DISPLACEMENTS = {
 }
 
 # Cut-cell integration settings.
-QUADRATURE = dict(depth=6, alpha=1e-6)
+# Choose "quadtree" or "moment-fitting". Fitting compresses cut cells only.
+QUADRATURE = dict(depth=6, alpha=1e-6, method="moment-fitting")
 
 # The field and mesh plots use the base grid. The convergence plot also solves
 # finer grids with these multipliers applied to both nx and ny.
@@ -79,6 +80,7 @@ def run_model(geometry, *, report=False):
     applied = force.reshape(-1, 2).sum(axis=0)
     support = reactions.reshape(-1, 2).sum(axis=0)
 
+    print(f"Quadrature: {QUADRATURE.get('method', 'quadtree')}")
     print(f"Active elements: {len(mesh.cells)} | Integration points: {point_count}")
     print(f"Mean right-edge ux: {nodal_displacement[edge_nodes['right'], 0].mean():+.6f} mm")
     print(f"Applied force (x, y):       ({applied[0]:+.3f}, {applied[1]:+.3f}) N")

@@ -1,4 +1,4 @@
-"""Reproducible verification experiment and publication assets for v1."""
+"""Reproducible Kirsch verification with selectable cut-cell quadrature."""
 
 import argparse
 import csv
@@ -46,11 +46,11 @@ def evaluate(mesh, material, u, evaluation_depth=6):
     return float(np.sqrt(numerator/denominator)),float(area)
 
 
-def run_case(n, depth=4, alpha=1e-6):
+def run_case(n, depth=4, alpha=1e-6, *, method="quadtree"):
     mat=Material()
     mesh=structured_mesh(n,n,radius=1.)
     start=perf_counter()
-    K,nq=assemble(mesh,mat,depth,alpha)
+    K,nq=assemble(mesh,mat,depth,alpha,method=method)
     assembly_seconds=perf_counter()-start
     f=boundary_traction(mesh,mat,kirsch_traction)
     bc=symmetry_constraints(mesh)
@@ -61,7 +61,7 @@ def run_case(n, depth=4, alpha=1e-6):
     free=np.setdiff1d(np.arange(len(u)),list(bc))
     force_scale=np.linalg.norm(f)
     result={"mesh_n":int(n),"cells":len(mesh.cells),"dofs":len(u),
-            "quadrature_depth":int(depth),"alpha":float(alpha),
+            "quadrature_depth":int(depth),"alpha":float(alpha),"quadrature_method":method,
             "quadrature_points":nq,"relative_stress_L2_error":error,
             "integrated_physical_area":area,"exact_physical_area":16-np.pi/4,
             "relative_free_residual":float(np.linalg.norm(reactions[free])/force_scale),
@@ -96,14 +96,14 @@ def plot_fields(state,path,*,compare_kirsch=True):
         fields.append((stress[:,0]-ref[:,0],"Stress error: sigma_xx","MPa","coolwarm"))
         title="Quarter plate with a hole | Q4 plane stress | exact Kirsch outer tractions"
     fig,axs=plt.subplots(1,len(fields),figsize=(4.7*len(fields),4.6),layout="constrained")
-    for ax,(values,title,label,cmap) in zip(axs,fields):
+    for ax,(values,field_title,label,cmap) in zip(axs,fields):
         kwargs={}
         if cmap=="coolwarm":
             lim=max(abs(values.min()),abs(values.max()))
             kwargs={"vmin":-lim,"vmax":lim}
         sc=ax.scatter(*p.T,c=values,s=6,marker="s",cmap=cmap,rasterized=True,**kwargs)
         ax.add_patch(Circle((0,0),mesh.radius,facecolor="white",edgecolor="#334155",lw=1.1))
-        ax.set(xlim=(0,mesh.length),ylim=(0,mesh.height),aspect="equal",xlabel="x [mm]",ylabel="y [mm]",title=title)
+        ax.set(xlim=(0,mesh.length),ylim=(0,mesh.height),aspect="equal",xlabel="x [mm]",ylabel="y [mm]",title=field_title)
         fig.colorbar(sc,ax=ax,shrink=.75,label=label)
     fig.suptitle(title,fontsize=13)
     fig.savefig(path,dpi=180)
@@ -145,32 +145,35 @@ def main():
     parser.add_argument("--mesh",nargs="+",type=int,default=[8,16,32])
     parser.add_argument("--depth",type=int,default=4)
     parser.add_argument("--alpha",type=float,default=1e-6)
+    parser.add_argument("--method",choices=("quadtree","moment-fitting"),default="quadtree")
     parser.add_argument("--sensitivity",action="store_true")
     parser.add_argument("--output",type=Path,default=Path("results"))
     args=parser.parse_args()
     args.output.mkdir(parents=True,exist_ok=True)
     results=[]
     for n in sorted(set(args.mesh)):
-        record,state=run_case(n,args.depth,args.alpha)
+        record,state=run_case(n,args.depth,args.alpha,method=args.method)
         results.append(record)
         print(f"n={n:3d}: {record['dofs']:5d} DOFs, stress error={100*record['relative_stress_L2_error']:.3f}%, "
-              f"free residual={record['relative_free_residual']:.2e}",flush=True)
+              f"free residual={record['relative_free_residual']:.2e}, "
+              f"{args.method}: {record['quadrature_points']} points",flush=True)
     plot_fields(state,args.output/"fields.png")
     plot_convergence(results,args.output/"convergence.png")
     sensitivity=[]
     if args.sensitivity:
         for alpha in (1e-4,1e-6,1e-8):
-            record,_=run_case(16,args.depth,alpha)
+            record,_=run_case(16,args.depth,alpha,method=args.method)
             sensitivity.append({"study":"fictitious_stiffness",**record})
         for depth in (2,4,6):
-            record,_=run_case(16,depth,args.alpha)
+            record,_=run_case(16,depth,args.alpha,method=args.method)
             sensitivity.append({"study":"quadrature_depth",**record})
     payload={"environment":{"python":platform.python_version(),"numpy":np.__version__,
                              "scipy":scipy.__version__,"matplotlib":matplotlib.__version__,
                              "platform":platform.platform()},
              "configuration":{"E_MPa":210000.,"nu":.3,"thickness_mm":1.,
                               "quarter_side_mm":4.,"hole_radius_mm":1.,"remote_tension_MPa":100.,
-                              "error_evaluation_depth":6,"error_evaluation_gauss_order":3},
+                              "error_evaluation_depth":6,"error_evaluation_gauss_order":3,
+                              "quadrature_method":args.method},
              "convergence":results,"sensitivity":sensitivity}
     (args.output/"metrics.json").write_text(json.dumps(payload,indent=2)+"\n",encoding="utf-8")
     with (args.output/"convergence.csv").open("w",newline="",encoding="utf-8") as stream:
